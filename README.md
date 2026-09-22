@@ -239,6 +239,9 @@ trail need no changes.
 - [THREAT_NOTES.md](THREAT_NOTES.md) — the top three risks in this design and their mitigations.
 - [verify_brief_not_injected.py](verify_brief_not_injected.py) — a check that the exercise brief
   itself contained no text hidden from a human reader. It did not.
+- [infra/](infra/README.md) — an illustrative Azure DevOps pipeline (build → test → package →
+  deploy to AKS) and notes on the Kubernetes manifests that would accompany it. Nothing here has
+  run; cloud deployment is outside the brief.
 
 ## Scope
 

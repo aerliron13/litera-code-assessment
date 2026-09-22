@@ -1,0 +1,322 @@
+# Regulated AI Action Workflow Engine — build, test and deploy
+#
+# ILLUSTRATIVE. This pipeline has never run: the service connections, the registry, the cluster and
+# the environment below do not exist. It is here to show the shape of the delivery path and where
+# the controls sit in it, not to be triggered as-is.
+#
+# Two things it references that are NOT in this repository yet, listed here rather than left for
+# someone to discover on the first run:
+#
+#   * src/RegulatedAi.Api/Dockerfile   — the container build
+#   * infra/iac/*.yaml                 — the Kubernetes manifests (see infra/iac/README.md)
+#
+# The ordering is the point. Tests gate packaging, packaging gates deployment, and deployment is
+# gated on an environment approval — so nothing reaches a cluster that has not been built from a
+# green commit on the default branch.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      # Documentation changes should not spend a deployment slot.
+      - README.md
+      - AI_USAGE.md
+      - PRODUCTION_NOTES.md
+      - THREAT_NOTES.md
+      - '**/*.md'
+
+pr:
+  branches:
+    include:
+      - main
+
+# ---------------------------------------------------------------------------------------------
+# Variables
+#
+# Everything environment-specific is a variable so the same definition serves every environment.
+# Secrets are NOT here: they come from a variable group backed by Key Vault, and the deployed
+# application reads them from the cluster. See the note on configuration in the Deploy stage.
+# ---------------------------------------------------------------------------------------------
+variables:
+  - name: dotnetVersion
+    value: '7.0.x'
+
+  - name: buildConfiguration
+    value: 'Release'
+
+  - name: solution
+    value: 'litera-code-assessment.sln'
+
+  - name: apiProject
+    value: 'src/RegulatedAi.Api/RegulatedAi.Api.csproj'
+
+  - name: dockerfilePath
+    value: 'src/RegulatedAi.Api/Dockerfile'
+
+  - name: manifestPath
+    value: 'infra/iac'
+
+  - name: imageRepository
+    value: 'regulated-ai-workflow-engine'
+
+  # Placeholders. Replace with the real registry, service connections and namespace.
+  - name: containerRegistry
+    value: 'REPLACE_ME.azurecr.io'
+
+  - name: registryServiceConnection
+    value: 'REPLACE_ME-acr'
+
+  - name: kubernetesServiceConnection
+    value: 'REPLACE_ME-aks'
+
+  - name: kubernetesNamespace
+    value: 'regulated-ai'
+
+  # Immutable tag. Never 'latest' — a mutable tag makes it impossible to say afterwards which
+  # build is actually running in the cluster, which is the first question asked in an incident.
+  - name: imageTag
+    value: '$(Build.BuildId)-$(Build.SourceVersion)'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  # =========================================================================================
+  # 1. Build
+  # =========================================================================================
+  - stage: Build
+    displayName: 'Build'
+    jobs:
+      - job: Compile
+        displayName: 'Restore and compile'
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: UseDotNet@2
+            displayName: 'Install .NET SDK $(dotnetVersion)'
+            inputs:
+              packageType: 'sdk'
+              version: '$(dotnetVersion)'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore'
+            inputs:
+              command: 'restore'
+              projects: '$(solution)'
+              feedsToUse: 'select'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Build solution'
+            inputs:
+              command: 'build'
+              projects: '$(solution)'
+              # --no-incremental so a stale obj/ cannot mask a compile error that a clean
+              # checkout would hit.
+              arguments: >-
+                --configuration $(buildConfiguration)
+                --no-restore
+                --no-incremental
+                -warnaserror
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Publish API'
+            inputs:
+              command: 'publish'
+              projects: '$(apiProject)'
+              publishWebProjects: false
+              zipAfterPublish: false
+              arguments: >-
+                --configuration $(buildConfiguration)
+                --no-build
+                --output $(Build.ArtifactStagingDirectory)/app
+
+          - publish: '$(Build.ArtifactStagingDirectory)/app'
+            artifact: 'api'
+            displayName: 'Stage API artifact'
+
+          # The manifests travel as an artifact so that Deploy applies exactly the files that were
+          # reviewed for this commit, rather than re-reading a branch that may have moved on.
+          - publish: '$(manifestPath)'
+            artifact: 'manifests'
+            displayName: 'Stage Kubernetes manifests'
+
+  # =========================================================================================
+  # 2. Test
+  #
+  # Both test projects run. `dotnet test` on the solution picks up RegulatedAi.Core.UnitTests and
+  # RegulatedAi.Api.UnitTests; they are named individually below so a failure names the suite.
+  # =========================================================================================
+  - stage: Test
+    displayName: 'Test'
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - job: UnitTests
+        displayName: 'Unit tests'
+        strategy:
+          matrix:
+            Core:
+              projectPath: 'tests/RegulatedAi.Core.UnitTests/RegulatedAi.Core.UnitTests.csproj'
+              suiteName: 'Core'
+            Api:
+              projectPath: 'tests/RegulatedAi.Api.UnitTests/RegulatedAi.Api.UnitTests.csproj'
+              suiteName: 'Api'
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: UseDotNet@2
+            displayName: 'Install .NET SDK $(dotnetVersion)'
+            inputs:
+              packageType: 'sdk'
+              version: '$(dotnetVersion)'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Run $(suiteName) tests'
+            inputs:
+              command: 'test'
+              projects: '$(projectPath)'
+              arguments: >-
+                --configuration $(buildConfiguration)
+                --logger trx
+                --collect:"XPlat Code Coverage"
+                --results-directory $(Agent.TempDirectory)/testresults
+              publishTestResults: false
+
+          - task: PublishTestResults@2
+            displayName: 'Publish $(suiteName) results'
+            # Always, so a failing run still reports which tests failed rather than only that the
+            # stage went red.
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: 'VSTest'
+              testResultsFiles: '**/*.trx'
+              searchFolder: '$(Agent.TempDirectory)/testresults'
+              testRunTitle: '$(suiteName) unit tests'
+              failTaskOnFailedTests: true
+
+          - task: PublishCodeCoverageResults@2
+            displayName: 'Publish $(suiteName) coverage'
+            condition: succeededOrFailed()
+            inputs:
+              summaryFileLocation: '$(Agent.TempDirectory)/testresults/**/coverage.cobertura.xml'
+
+  # =========================================================================================
+  # 3. Package
+  #
+  # Only after tests pass, and only on the default branch. A pull request validates by building
+  # and testing; it does not produce an image, because an image nobody will deploy is just
+  # registry cost and one more tag to confuse an incident.
+  # =========================================================================================
+  - stage: Package
+    displayName: 'Package'
+    dependsOn: Test
+    condition: |
+      and(
+        succeeded(),
+        eq(variables['Build.SourceBranch'], 'refs/heads/main')
+      )
+    jobs:
+      - job: Container
+        displayName: 'Build and push image'
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: Docker@2
+            displayName: 'Build and push $(imageRepository):$(imageTag)'
+            inputs:
+              command: 'buildAndPush'
+              repository: '$(imageRepository)'
+              dockerfile: '$(dockerfilePath)'
+              buildContext: '.'
+              containerRegistry: '$(registryServiceConnection)'
+              tags: |
+                $(imageTag)
+
+          # Where an image scan belongs: after the push, before the deployment gate, failing the
+          # stage on a high or critical finding. A scan that runs after deployment tells you what
+          # is already in production.
+          - script: |
+              echo "TODO: container image scan (Trivy, Defender for Containers, Snyk)."
+              echo "Fail this step on high/critical findings."
+            displayName: 'Image vulnerability scan (placeholder)'
+
+  # =========================================================================================
+  # 4. Deploy
+  #
+  # A deployment job against a named environment, so Azure DevOps enforces whatever approvals and
+  # checks are configured on that environment before this runs. The human gate on releasing a
+  # regulated service belongs here, in the same way the approval gate inside the application
+  # belongs in front of a risky action.
+  # =========================================================================================
+  - stage: Deploy
+    displayName: 'Deploy to AKS'
+    dependsOn: Package
+    condition: succeeded()
+    jobs:
+      - deployment: DeployApi
+        displayName: 'Deploy API'
+        environment: 'regulated-ai-production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: 'manifests'
+                  displayName: 'Download manifests'
+
+                # Configuration and secrets come from the cluster, never from the image and never
+                # from appsettings. The committed appsettings.Development.json carries a dev-only
+                # signing key and a shared seed password; neither may exist in a deployed
+                # environment. A real deployment sources Jwt:SigningKey from Key Vault via the
+                # Secrets Store CSI driver or a workload-identity-bound secret.
+                - script: |
+                    echo "TODO: project Key Vault secrets into the namespace"
+                    echo "  - Jwt:SigningKey        (never the development value)"
+                    echo "  - connection strings for the durable audit and approval stores"
+                    echo "Verify no appsettings.Development.json is present in the image."
+                  displayName: 'Secrets and configuration (placeholder)'
+
+                - task: KubernetesManifest@1
+                  displayName: 'Apply manifests'
+                  inputs:
+                    action: 'deploy'
+                    connectionType: 'kubernetesServiceConnection'
+                    kubernetesServiceConnection: '$(kubernetesServiceConnection)'
+                    namespace: '$(kubernetesNamespace)'
+                    manifests: |
+                      $(Pipeline.Workspace)/manifests/deployment.yaml
+                      $(Pipeline.Workspace)/manifests/service.yaml
+                      $(Pipeline.Workspace)/manifests/ingress.yaml
+                    containers: '$(containerRegistry)/$(imageRepository):$(imageTag)'
+
+                # Without this the stage goes green the moment the manifest is accepted, which is
+                # not the same as the new pods being healthy. A failed rollout should fail the
+                # pipeline.
+                - task: Kubernetes@1
+                  displayName: 'Wait for rollout'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceEndpoint: '$(kubernetesServiceConnection)'
+                    namespace: '$(kubernetesNamespace)'
+                    command: 'rollout'
+                    arguments: 'status deployment/$(imageRepository) --timeout=180s'
+
+                - script: |
+                    echo "TODO: post-deployment smoke test against the deployed instance."
+                    echo "Minimum: /health returns 200, and an unauthenticated call to"
+                    echo "/api/workflow/run returns 401 — a deployment that is reachable but"
+                    echo "unauthenticated is worse than one that is down."
+                  displayName: 'Smoke test (placeholder)'
+
+              on:
+                failure:
+                  steps:
+                    - script: |
+                        echo "TODO: roll back to the previous revision and alert."
+                        echo "kubectl rollout undo deployment/$(imageRepository)"
+                      displayName: 'Roll back (placeholder)'
