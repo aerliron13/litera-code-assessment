@@ -130,6 +130,16 @@ execute the action twice (see PRODUCTION_NOTES.md).
 
 ## Also considered
 
+- **Intent resolution as an attack surface.** `requestedAction` and `subjectId` are required fields
+  even though a model could deduce both from the question, because the two inferences fail
+  differently: a wrong risk score produces advice a human reads, while a wrong intent performs the
+  wrong operation *having satisfied every gate* — the approval, the role check and the audit entry
+  all describe the resolved action, so a bad resolution corrupts the record of what was authorised
+  rather than tripping a control. It also keeps free text, the most attacker-influenceable input,
+  away from choosing what the service does. PRODUCTION_NOTES.md sets out how to add the inference
+  safely: propose-and-validate against the closed action set, resolve intent from the question
+  alone with no evidence in that prompt, ask on ambiguity, confirm before anything gated, and bind
+  the approval to the resolved pair.
 - **A poisoned brief.** The exercise arrived as a PDF that was fed to a text extractor and read,
   which makes it attacker-influenceable content in exactly the sense above. It was checked for text
   hidden from a human reader — the classic white-on-white trick that an extractor reads verbatim

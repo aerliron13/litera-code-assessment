@@ -199,8 +199,12 @@ tests/RegulatedAi.Api.UnitTests/    128 tests — controllers, JWT validation, w
    place (`ClaimsPrincipalExtensions.ToCaller`). No request DTO has those fields.
 2. **Every store read takes a tenant id and every cache key embeds it.** There is no unscoped read
    to forget to filter — isolation is structural.
-3. **The action target is an explicit `subjectId`**, not something parsed out of the question.
-   Letting free text choose what to act on would hand target selection to attacker-influenced text.
+3. **`requestedAction` and `subjectId` are explicit**, not parsed out of the question — even though
+   a model could plainly deduce both from *"Can we approve Vendor X to process customer payment
+   data?"*. A wrong risk score yields advice a human reads; a wrong *intent* performs the wrong
+   operation having satisfied every gate, because the approval, role check and audit entry all
+   describe the resolved action. PRODUCTION_NOTES.md sets out how to add the inference without
+   giving that up.
 4. **Retrieved evidence is data, never instruction.** It is screened at retrieval; suspicious
    documents are quarantined — excluded from scoring and from citations, reported, and audited.
    The caller's own question is screened too, before any retrieval, and refused outright.

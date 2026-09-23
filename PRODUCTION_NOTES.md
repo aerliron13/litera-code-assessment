@@ -162,6 +162,63 @@ proposed change would have done to historical decisions.
 
 ---
 
+## Natural-language intent resolution
+
+**Now.** `requestedAction` and `subjectId` are required fields. The caller states that it wants
+`markVendorApproved` on `vendor-x`; the engine never infers either from `question`.
+
+This is the weakest-looking decision in the solution and the one I most expect to be challenged,
+because the inference is trivial. *"Can we approve Vendor X to process customer payment data?"*
+names the action and the target unambiguously, a model would resolve both reliably, and making a
+user restate them in structured fields is exactly the friction a natural-language interface exists
+to remove. A real product does this.
+
+**Why it is not done here.** Two inferences look similar and are not. Getting the *risk* wrong
+produces a wrong recommendation, and a human reads it before anything happens — the output is
+advice. Getting the *intent* wrong performs the wrong operation, or the right operation against the
+wrong subject, and it does so having satisfied every control, because the gates faithfully protect
+whatever action they were handed. The approval record, the role check and the audit entry all
+describe the *resolved* action, so a bad resolution does not trip a control — it corrupts the record
+of what was authorised. "Dave approved marking vendor-x compliant" is only true if `vendor-x` was
+what the question meant.
+
+It also matters that `question` is the input an attacker most easily influences. Today it affects
+relevance ordering within the tenant's own corpus and nothing else. Promote it to choosing the
+action and its target and a crafted question — or retrieved evidence that shares a prompt with it —
+is deciding what the service does.
+
+**How I would build it.** The shape that keeps the property is to let the model *propose* and make
+the proposal earn its way through the same boundary as everything else:
+
+- **Constrain the output, then validate it independently.** The model returns
+  `{ action, subjectId, confidence }`. `action` must be one of `IActionService.RegisteredActions`;
+  `subjectId` must resolve to a subject that exists in the caller's tenant. Anything else is a
+  refusal, not a best guess. `PolicyRules.ForAction` already fails closed on an unrecognised action
+  name, and `ActionService` already returns `unsupported_action` — so an invented action name
+  cannot become a bypass, only a refusal.
+- **Resolve intent from the question alone.** The intent prompt must not contain retrieved
+  evidence. If it does, a poisoned document can rewrite the action, which is the whole attack this
+  design exists to prevent. Retrieval happens *after* intent is fixed, never before.
+- **Ambiguity asks; it does not pick.** More than one plausible action or subject, or confidence
+  below threshold, returns a clarification rather than a choice. Fail closed here means fail
+  *silent* — do nothing and ask.
+- **Confirm before anything gated.** Echo the resolved intent back — "you are asking me to mark
+  vendor-x approved" — and require confirmation for any action that needs approval. The human who
+  approves must be approving a specific, stated action, not a sentence.
+- **Bind the approval to the resolved pair.** An approval is already scoped to
+  `(tenant, action, subject)`. It must be matched against what was *resolved*, so an approval
+  obtained for `vendor-x` cannot authorise an execution the model later resolves to `vendor-y`.
+- **Audit the inference as a first-class event.** A new event type recording the question, the
+  proposed action and subject, the confidence, and the model and prompt version. "Why did it do
+  that, to that vendor?" has to be answerable a year later, and the resolution step is where that
+  answer lives.
+- **Bound proposals by role.** The model may only propose actions the caller's role could execute,
+  so intent resolution cannot widen authority even before the role gate sees it.
+
+The interface to build it against already exists: `WorkflowRequest` takes `RequestedAction` and
+`SubjectId` as data, so the resolver is a layer *above* the orchestrator that fills them in. Nothing
+in the engine changes.
+
 ## Cross-origin access
 
 **Now.** A named policy built from configuration, allowing **no** origins by default; wildcards are

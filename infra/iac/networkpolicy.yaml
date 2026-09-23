@@ -1,0 +1,59 @@
+# Default-deny, both directions.
+#
+# The egress half is the part that matters here. This service evaluates documents that a vendor or
+# a tenant supplied, and one of them is deliberately hostile. If injected content ever does manage
+# to influence what the service *does*, the damage is bounded by what the pod can reach — so the
+# pod should be able to reach almost nothing. Exfiltrating a tenant's evidence requires somewhere
+# to send it.
+#
+# The ingress half says only the ingress controller may talk to the API, so the ClusterIP service
+# is not reachable from any other workload that happens to land in the cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: regulated-ai-workflow-engine
+  labels:
+    app.kubernetes.io/name: regulated-ai-workflow-engine
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: regulated-ai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: regulated-ai-workflow-engine
+
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Only from the ingress controller, and only on the container port.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+
+  egress:
+    # DNS, without which nothing else resolves.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # Nothing else is permitted today, and nothing else is needed: evidence, approvals and the
+    # audit trail are all in-process.
+    #
+    # Each dependency added later gets its own explicit rule here rather than a widening of this
+    # policy — the durable audit store, Key Vault, and the identity provider's JWKS endpoint. If a
+    # model is ever introduced, its endpoint becomes the one place this workload may send tenant
+    # evidence, which is worth being able to point at in a single file.

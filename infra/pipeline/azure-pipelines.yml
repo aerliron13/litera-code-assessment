@@ -1,14 +1,11 @@
 # Regulated AI Action Workflow Engine — build, test and deploy
 #
 # ILLUSTRATIVE. This pipeline has never run: the service connections, the registry, the cluster and
-# the environment below do not exist. It is here to show the shape of the delivery path and where
-# the controls sit in it, not to be triggered as-is.
+# the environment below do not exist, and every value marked REPLACE_ME needs supplying. It is here
+# to show the shape of the delivery path and where the controls sit in it, not to be triggered
+# as-is.
 #
-# Two things it references that are NOT in this repository yet, listed here rather than left for
-# someone to discover on the first run:
-#
-#   * src/RegulatedAi.Api/Dockerfile   — the container build
-#   * infra/iac/*.yaml                 — the Kubernetes manifests (see infra/iac/README.md)
+# What it references does exist: src/RegulatedAi.Api/Dockerfile and the manifests in infra/iac.
 #
 # The ordering is the point. Tests gate packaging, packaging gates deployment, and deployment is
 # gated on an environment approval — so nothing reaches a cluster that has not been built from a
@@ -288,7 +285,11 @@ stages:
                     connectionType: 'kubernetesServiceConnection'
                     kubernetesServiceConnection: '$(kubernetesServiceConnection)'
                     namespace: '$(kubernetesNamespace)'
+                    # Ordered so the things the Deployment depends on exist first: the service
+                    # account it runs as, and the policy that bounds what it can reach.
                     manifests: |
+                      $(Pipeline.Workspace)/manifests/serviceaccount.yaml
+                      $(Pipeline.Workspace)/manifests/networkpolicy.yaml
                       $(Pipeline.Workspace)/manifests/deployment.yaml
                       $(Pipeline.Workspace)/manifests/service.yaml
                       $(Pipeline.Workspace)/manifests/ingress.yaml

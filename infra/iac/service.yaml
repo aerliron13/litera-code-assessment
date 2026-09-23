@@ -1,0 +1,22 @@
+# Cluster-internal service in front of the API pods.
+#
+# ClusterIP, not LoadBalancer: the only thing that should be able to reach this service directly
+# is the ingress controller, which terminates TLS and is where rate limiting and WAF rules live.
+# A LoadBalancer here would publish the API to the network with none of that in front of it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: regulated-ai-workflow-engine
+  labels:
+    app.kubernetes.io/name: regulated-ai-workflow-engine
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: regulated-ai
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: regulated-ai-workflow-engine
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

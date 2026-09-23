@@ -1,0 +1,55 @@
+# TLS termination and host routing.
+#
+# Everything below the annotations is ordinary; the annotations are where the decisions are.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: regulated-ai-workflow-engine
+  labels:
+    app.kubernetes.io/name: regulated-ai-workflow-engine
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: regulated-ai
+  annotations:
+    # TLS only. A bearer token sent over plaintext HTTP is a bearer token an on-path observer
+    # now holds, and it is valid for every tenant operation its claims allow.
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/force-ssl-redirect: 'true'
+
+    cert-manager.io/cluster-issuer: 'REPLACE_ME-issuer'
+
+    # First line of rate limiting, in front of the application. The API has none of its own yet
+    # (see PRODUCTION_NOTES.md) so this is currently the only thing standing between one tenant
+    # and everyone else's capacity — and between a credential-stuffing run and /api/auth/login.
+    nginx.ingress.kubernetes.io/limit-rps: '20'
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: '2'
+
+    # Evidence questions and justifications are small. A generous body limit on a JSON API is
+    # just an easier denial-of-service.
+    nginx.ingress.kubernetes.io/proxy-body-size: '64k'
+
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '30'
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '30'
+
+    # CORS is handled by the application, from the Cors configuration section, so that the
+    # allowed origins are validated at startup and live with the rest of the service's policy.
+    # Enabling it here as well would give two places to disagree about who may call the API.
+    nginx.ingress.kubernetes.io/enable-cors: 'false'
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - REPLACE_ME.example.com
+      secretName: regulated-ai-workflow-engine-tls
+  rules:
+    - host: REPLACE_ME.example.com
+      http:
+        paths:
+          # Only the API surface is routed. Swagger is not exposed: it is useful in development
+          # and is an inventory of every endpoint and payload shape in production.
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: regulated-ai-workflow-engine
+                port:
+                  name: http

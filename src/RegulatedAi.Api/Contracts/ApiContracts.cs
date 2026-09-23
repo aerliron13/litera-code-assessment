@@ -46,7 +46,18 @@ public sealed record RunWorkflowRequest
     [MaxLength(128)]
     public string SubjectId { get; init; } = string.Empty;
 
-    /// <summary>Omit for an advisory run that assesses risk without attempting anything.</summary>
+    /// <summary>
+    /// The action to attempt, or omitted for an advisory run that assesses risk without attempting
+    /// anything.
+    /// </summary>
+    /// <remarks>
+    /// A language model could deduce this from <see cref="Question"/>, and in a real product it
+    /// would — the sentence "can we approve Vendor X…" names the action unambiguously. It is a
+    /// required field here because an intent resolved wrongly executes the wrong operation having
+    /// passed every gate, whereas a risk score resolved wrongly only produces a recommendation a
+    /// human then reads. See the remarks on <c>WorkflowRequest</c> and the intent-resolution
+    /// section of PRODUCTION_NOTES.md for how to add the inference without giving up the property.
+    /// </remarks>
     [MaxLength(128)]
     public string? RequestedAction { get; init; }
 
